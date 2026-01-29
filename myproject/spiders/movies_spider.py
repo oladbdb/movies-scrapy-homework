@@ -39,7 +39,7 @@ def normalize_title(title):
 
 class MoviesSpider(CrawlSpider):
     name = 'movies'
-    allowed_domains = ['ru.wikipedia.org']
+    allowed_domains = ['ru.wikipedia.org', 'imdb.com', 'www.imdb.com']
     start_urls = [
         'https://ru.wikipedia.org/wiki/Категория:Фильмы_по_алфавиту'
     ]
@@ -118,10 +118,66 @@ class MoviesSpider(CrawlSpider):
         year_raw = self.infobox_value(response, "Год")
         year = extract_year(year_raw) or extract_year(response.text)
 
-        yield {
+        imdb_link = self.extract_imdb_link(response)
+
+        item = {
             "title": title,
             "genre": genre,
             "director": director,
             "country": country,
             "year": year,
+            "imdb_rating": "",
         }
+
+        if imdb_link:
+            yield scrapy.Request(
+                imdb_link,
+                callback=self.parse_imdb,
+                meta={"item": item},
+                dont_filter=True,
+                priority=1000,
+            )
+        else:
+            yield item
+
+    def extract_imdb_link(self, response):
+        link = response.xpath(
+            '//table[contains(@class, "infobox")]'
+            '//tr['
+            './/th//a[normalize-space()="IMDb"] or '
+            './/th[normalize-space()="IMDb"]'
+            ']'
+            '//td//a[contains(@href, "imdb.com/title/")]/@href'
+        ).get()
+        if not link:
+            link = response.xpath(
+                '//a[contains(@href, "imdb.com/title/")]/@href'
+            ).get()
+        if not link:
+            return ""
+        link = link.strip()
+        if link.startswith("//"):
+            link = "https:" + link
+        elif link.startswith("/"):
+            link = "https://www.imdb.com" + link
+        return link
+
+    def parse_imdb(self, response):
+        item = response.meta.get("item")
+        if not item:
+            return
+
+        rating_xpath = (
+            "//div[contains(text(), 'IMDb RATING')]/following-sibling::a"
+            "//div[contains(@data-testid, 'rating')]/span/text()"
+        )
+        rating = response.xpath(rating_xpath).get()
+        if rating:
+            try:
+                item["imdb_rating"] = str(float(rating.replace(',', '.')))
+            except ValueError:
+                item["imdb_rating"] = rating.strip()
+        else:
+            item["imdb_rating"] = ""
+
+        yield item
